@@ -421,6 +421,9 @@ try { cfg = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); } catch(_){}
 function guardarCfg(){ try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch(_){} }
 function borrarCfg(){ cfg = null; try { localStorage.removeItem(CFG_KEY); } catch(_){} }
 const SES_KEY = 'atlas_sesion', DISPOSITIVO = matchMedia('(pointer:coarse)').matches ? 'movil' : 'pc';
+// En Android el micrófono no se puede compartir: si la verificación de voz lo mantiene abierto,
+// el reconocimiento de voz no oye nada y queda pitando. En el celular se usa solo el reconocimiento.
+const ES_MOVIL = DISPOSITIVO === 'movil' || /Android|iPhone|iPad/i.test(navigator.userAgent);
 let ses = null;
 try { ses = JSON.parse(localStorage.getItem(SES_KEY) || 'null'); } catch(_){}
 function sesionValida(){ return !!(ses && ses.sesion && ses.vence > Date.now() + 60000); }
@@ -806,7 +809,7 @@ pintarAjustesVoz();
 if (ajustes.motor === 'elevenlabs' && ajustes.elKey) cargarVocesEleven();
 
 /* ================= CONTROL DE ACCESO POR VOZ ================= */
-function exigeVoz(){ return !!(estado.perfilVoz && estado.perfilVoz.exigir); }
+function exigeVoz(){ return !ES_MOVIL && !!(estado.perfilVoz && estado.perfilVoz.exigir); }
 function autorizarVoz(huella){
   if (!exigeVoz()) return true;
   const r = VozBio.verificar(huella, estado.perfilVoz);
@@ -830,7 +833,7 @@ let rec = null, escuchandoManual = false, tOrden = null;
 
 function crearReconocedor(){
   if (!SR) return null;
-  const r = new SR(); r.lang='es-CL'; r.interimResults=true; r.maxAlternatives=5; r.continuous = estado.continua;
+  const r = new SR(); r.lang='es-CL'; r.interimResults=true; r.maxAlternatives=5; r.continuous = estado.continua && !ES_MOVIL;
   r.onstart = () => { if (!estado.hablando) VozBio.escuchar(true); };
   r.onresult = e => {
     let interino='', final=''; const alternativas = [];
@@ -845,7 +848,15 @@ function crearReconocedor(){
   r.onerror = e => {
     if (e.error==='not-allowed' || e.error==='service-not-allowed'){
       estado.continua=false; $('btnContinua').classList.remove('activo');
-      agregar('sistema','El navegador bloqueó el reconocimiento de voz. Revisa el permiso de micrófono en el candado de la barra de direcciones.');
+      agregar('sistema', ES_MOVIL
+        ? 'Android bloqueó el micrófono para Atlas. Ve a Ajustes → Apps → Chrome (o Atlas) → Permisos → Micrófono → Permitir.'
+        : 'El navegador bloqueó el reconocimiento de voz. Revisa el permiso de micrófono en el candado de la barra de direcciones.');
+    } else if (e.error==='audio-capture'){
+      agregar('sistema','El micrófono está ocupado por otra app (llamada, grabadora, otra pestaña). Ciérrala e intenta de nuevo.');
+    } else if (e.error==='network'){
+      agregar('sistema','El reconocimiento de voz necesita internet. En Android, revisa también que la app "Google" esté instalada y actualizada.');
+    } else if (e.error==='no-speech' && escuchandoManual){
+      mostrarSubtitulo('No te escuché. Toca el micrófono y habla apenas suene.', 'nota', 5000);
     }
   };
   r.onend = () => {
@@ -902,6 +913,10 @@ function escucharUnaVez(){
   try{ rec.start(); }catch(_){}
 }
 function activarContinua(on){
+  if (on && ES_MOVIL){
+    agregar('sistema', 'En el celular la escucha continua no es posible: Android corta el micrófono cada pocos segundos y pita. Toca el micrófono para hablar.');
+    return;
+  }
   detenerEscuchaPantalla();
   estado.continua = on; $('btnContinua').classList.toggle('activo', on);
   if (rec){ try{ rec.onend=null; rec.abort(); }catch(_){} } rec=null;
@@ -1060,7 +1075,7 @@ function comandoLocal(texto, eco){
 }
 
 /* ================= ESCUCHA DE PANTALLA: cerrar o controlar imágenes y videos con la voz ================= */
-const ESCUCHA_PANTALLA = true;     // false si no quieres que el micrófono escuche mientras hay algo en pantalla
+const ESCUCHA_PANTALLA = !ES_MOVIL;     // false si no quieres que el micrófono escuche mientras hay algo en pantalla
 let recPantalla = null, escuchaPantallaBloqueada = false;
 function detenerEscuchaPantalla(){
   if (!recPantalla) return;
@@ -1413,6 +1428,7 @@ setInterval(() => {
 }, 50);
 
 function abrirRegistro(){
+  if (ES_MOVIL){ agregar('sistema', 'La verificación de voz funciona solo en el computador. En el celular, tu protección es el código de Google Authenticator.'); return; }
   if (!VozBio.listo){ agregar('sistema','Se necesita acceso al micrófono para registrar tu voz.'); return; }
   if (estado.continua) activarContinua(false);
   reg = { paso:0, muestras:[], grabando:false }; mostrarPaso(); $('modal').classList.add('abierto');
@@ -1459,6 +1475,11 @@ function probarVoz(){
 }
 function guardarPerfil(){ api('guardarPerfilVoz', { perfil: estado.perfilVoz }).catch(e => agregar('sistema','No se guardó el ajuste: '+e.message)); actualizarPanelVoz(); }
 function actualizarPanelVoz(){
+  if (ES_MOVIL){
+    ['btnRegistrar','btnProbar','btnExigir','btnBorrarVoz'].forEach(id => $(id).disabled = true);
+    $('estadoPerfil').textContent = 'En el celular la verificación de voz está desactivada: Android no permite que dos funciones usen el micrófono a la vez. Tu acceso lo protege el código de Google Authenticator.';
+    return;
+  }
   const p = estado.perfilVoz, hay = !!p;
   ['btnProbar','btnExigir','btnBorrarVoz'].forEach(id => $(id).disabled = !hay);
   $('btnRegistrar').textContent = hay ? 'Volver a registrar' : 'Registrar mi voz';
@@ -1552,13 +1573,16 @@ async function arrancar(){
   $('errConexion').textContent = ''; $('arranque').classList.add('oculto');
   if (iniciado){ agregar('sistema', 'Sesión renovada.'); volverAEspera(); return; }
   iniciado = true;
-  if (!VozBio.listo){
+  if (ES_MOVIL){
+    try { const st = await navigator.mediaDevices.getUserMedia({ audio:true }); st.getTracks().forEach(t => t.stop()); }
+    catch(_){ agregar('sistema', 'Sin acceso al micrófono. Permítelo en Ajustes → Apps → Chrome (o Atlas) → Permisos → Micrófono.'); }
+  } else if (!VozBio.listo){
     try { await VozBio.iniciar(); }
     catch(_){ agregar('sistema', 'Sin acceso al micrófono. Permítelo en la configuración del navegador y vuelve a abrir Atlas.'); }
   }
   if (resumenInicial){ presentarResumen(resumenInicial, true); resumenInicial = null; }
   else { const sg = saludo(); agregar('asistente', sg); hablar(sg); }
-  if (!estado.perfilVoz) agregar('sistema', 'Registra tu voz en Menú → Seguridad y memorias para activar el reconocimiento en este equipo.');
+  if (!estado.perfilVoz && !ES_MOVIL) agregar('sistema', 'Registra tu voz en Menú → Seguridad y memorias para activar el reconocimiento en este equipo.');
 }
 $('btnIniciar').onclick = arrancar;
 $('btnCambiarToken').onclick = () => {
@@ -1586,6 +1610,7 @@ document.addEventListener('keydown', e => {
   if (e.altKey && e.key==='ArrowRight') $('visorSig').click();
 });
 $('btnContinua').onclick = () => activarContinua(!estado.continua);
+if (ES_MOVIL) $('btnContinua').style.display = 'none';
 $('btnVoz').onclick = () => { estado.voz=!estado.voz; if (!estado.voz) callar();
   $('btnVoz').classList.toggle('activo', estado.voz); $('btnVoz').textContent = estado.voz ? 'Voz activada':'Voz silenciada'; };
 $('btnAjustes').onclick = () => $('cajon').classList.add('abierto');

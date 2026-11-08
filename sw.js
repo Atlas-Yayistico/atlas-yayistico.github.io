@@ -1,6 +1,6 @@
 /* Atlas — service worker: guarda solo la interfaz para que abra rápido como app.
    Nunca intercepta ni guarda las llamadas al backend (script.google.com) ni datos tuyos. */
-const CACHE = 'atlas-v4';
+const CACHE = 'atlas-v5';
 const ARCHIVOS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
